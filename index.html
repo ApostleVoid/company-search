@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Company Insights Module</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #f8f9fa;
+      margin: 0;
+      padding: 40px 20px;
+      display: flex;
+      justify-content: center;
+    }
+    .container {
+      width: 100%;
+      max-width: 800px;
+      background: #ffffff;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    }
+    h2 {
+      margin-top: 0;
+      color: #1a73e8;
+    }
+    .search-box {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 25px;
+    }
+    input {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 16px;
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+      outline: none;
+    }
+    input:focus {
+      border-color: #1a73e8;
+    }
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      background-color: #1a73e8;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background-color: #1557b0;
+    }
+    #result {
+      line-height: 1.6;
+      color: #3c4043;
+      background: #f1f3f4;
+      padding: 20px;
+      border-radius: 8px;
+      min-height: 100px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h2>Company Quick View</h2>
+    <div class="search-box">
+      <input type="text" id="companyInput" placeholder="Enter company name (e.g. UK Bangla)...">
+      <button onclick="getCompanyData()">Search</button>
+    </div>
+
+    <div id="result">Enter a company name above to fetch live overview and financial updates...</div>
+  </div>
+
+  <script type="module">
+    import { GoogleGenAI } from "https://esm.sh/@google/genai";
+
+    // INSERT YOUR GEMINI API KEY HERE
+    const API_KEY = AQ.Ab8RN6KxOlDfj86NeIgvWxZ8EZUCq9ryuBHmzVUNobLBLAwdoA; 
+    
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
+
+    window.getCompanyData = async function() {
+      const companyName = document.getElementById("companyInput").value.trim();
+      const resultDiv = document.getElementById("result");
+      
+      if (!companyName) {
+        resultDiv.innerHTML = "Please enter a company name first.";
+        return;
+      }
+      
+      resultDiv.innerHTML = "Searching live web data and generating response...";
+
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-3.6-flash",
+          contents: `Provide a quick view and update for: ${companyName}`,
+          config: {
+            // SYSTEM INSTRUCTION
+            systemInstruction: "You are an expert financial and corporate analyst. When given a company name, provide a concise overview including: 1. Brief company description/sector, 2. Recent performance/news over the last 3-6 months, and 3. Key financial highlights if available. Present the information clearly using HTML bullet points (<ul> and <li> tags).",
+            // GOOGLE SEARCH GROUNDING
+            tools: [{ googleSearch: {} }] 
+          }
+        });
+
+        resultDiv.innerHTML = response.text;
+      } catch (error) {
+        console.error("Error:", error);
+        resultDiv.innerHTML = "An error occurred while fetching company data. Check your API key or console log.";
+      }
+    };
+  </script>
+</body>
+</html>
