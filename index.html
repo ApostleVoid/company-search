@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Company Insights Module</title>
+  <title>Fast Company Insights</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f9fa; padding: 40px 20px; display: flex; justify-content: center; }
     .container { width: 100%; max-width: 800px; background: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
@@ -22,16 +22,33 @@
   <div class="container">
     <h2>Company Quick View</h2>
     <div class="search-box">
-      <input type="text" id="companyInput" placeholder="Enter company name (e.g. Pimkie Apparels Ltd)...">
+      <input type="text" id="companyInput" placeholder="Enter company name...">
       <button id="searchBtn" onclick="analyzeCompany()">Search</button>
     </div>
 
-    <div id="result">Enter a company name above to fetch live data...</div>
+    <div id="result">Enter a company name above...</div>
   </div>
 
   <script src="config.js"></script>
 
   <script>
+    // Fast RSS fetch wrapped in a 2.5-second strict timeout race
+    async function fetchNewsWithTimeout(query, timeoutMs = 2500) {
+      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+      const jsonBridgeUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
+
+      const fetchPromise = fetch(jsonBridgeUrl).then(res => res.json());
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("RSS_TIMEOUT")), timeoutMs)
+      );
+
+      try {
+        return await Promise.race([fetchPromise, timeoutPromise]);
+      } catch (err) {
+        return null; // Gracefully fall through on timeout or network error
+      }
+    }
+
     async function analyzeCompany() {
       const company = document.getElementById("companyInput").value.trim();
       const resultDiv = document.getElementById("result");
@@ -43,89 +60,84 @@
       }
 
       if (!window.API_KEY) {
-        resultDiv.innerHTML = "API Key missing or invalid in config.js.";
+        resultDiv.innerHTML = "API Key missing in config.js.";
         return;
       }
 
       searchBtn.disabled = true;
-      resultDiv.innerHTML = `<span class="status">Step 1/2: Checking news & trade records...</span>`;
+      resultDiv.innerHTML = `<span class="status">Connecting...</span>`;
 
       try {
+        // Step 1: Attempt RSS fetch with a strict 2.5s cutoff
+        const newsData = await fetchNewsWithTimeout(`${company} financial performance news`, 2500);
         let promptText = "";
 
-        // Check RSS news feeds first
-        const query = encodeURIComponent(`${company} financial performance news`);
-        const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`;
-        const jsonBridgeUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
-
-        const newsRes = await fetch(jsonBridgeUrl);
-        const newsData = await newsRes.json();
-
-        if (newsData.items && newsData.items.length > 0) {
-          resultDiv.innerHTML = `<span class="status">Step 2/2: Synthesizing live news with Gemini 3.5 Flash...</span>`;
-          const articlesContext = newsData.items.slice(0, 5).map(item => `- ${item.title} (${item.pubDate})`).join("\n");
-          
-          promptText = `
-You are a senior credit and equity risk analyst. Synthesize these news headlines for ${company}:
-
-${articlesContext}
-
-Provide a clean HTML summary using <ul>, <li>, and <strong> tags:
-1. **Overview & Market Sentiment**: Synthesize news context and market stance.
-2. **Recent 3-6 Month Performance**: Key financial or operational developments.
-3. **Holding Status & Risk Factors**: Parent group or ownership status and major risks.
-Return ONLY clean HTML tags.
-          `;
+        if (newsData && newsData.items && newsData.items.length > 0) {
+          const articles = newsData.items.slice(0, 3).map(item => `- ${item.title}`).join("\n");
+          promptText = `Concisely analyze these headlines for ${company}:\n${articles}\nProvide a clean HTML summary (<ul>, <li>, <strong>) with: 1. Overview, 2. Highlights, 3. Impact. Max 150 words. Return ONLY raw HTML.`;
         } else {
-          // Deep Structural Fallback for Private/Unlisted Corporations
-          resultDiv.innerHTML = `<span class="status">Step 2/2: Generating structural corporate & risk profile...</span>`;
-          
-          promptText = `
-You are a senior banking analyst evaluating a private/unlisted corporate entity: "${company}".
-
-Note: Public media press releases are limited. Provide an objective corporate holding and operational profile based on known industry data:
-
-Analyze and format using HTML (<ul>, <li>, and <strong> tags):
-1. **Holding & Ownership Structure**: Identify parent company/conglomerate ownership (e.g., ABA Group for Pimkie Apparels) and corporate structure.
-2. **Recent Operational & Financial Performance (2-3 Months Sector Assessment)**:
-   - Industry-wide volume trends, raw material input cost shifts (cotton/energy/freight), and export demand trajectories impacting firms in this specific category.
-   - Known manufacturing scale (e.g., floor capacity, workforce scale, or major global buyer networks like NEXT or American Eagle if applicable).
-3. **Current Financial Standing & Credit Risk Profile**:
-   - Liquidity and working capital pressure points (e.g., minimum wage policy changes, utility price hikes, letter of credit/LC opening dynamics).
-   - Key risk factors for lenders or business partners.
-
-Do NOT generate empty marketing praise. Return ONLY raw HTML.
-          `;
+          promptText = `Provide a concise, 3-bullet financial & operational structural profile for "${company}".
+Format as HTML (<ul>, <li>, <strong>):
+1. **Holding & Group Structure**: Parent conglomerate or entity classification.
+2. **Operational Scale & Financial Indicators**: Revenue drivers, export/manufacturing scale, or sector metrics.
+3. **Current Sector Credit & Market Risks**: Primary liquidity or supply chain risk drivers.
+Max 150 words. Return ONLY raw HTML.`;
         }
 
-        const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${window.API_KEY}`;
+        resultDiv.innerHTML = ""; // Clear loader for streaming
 
-        const aiResponse = await fetch(endpointUrl, {
+        // Step 2: Stream content directly using streamGenerateContent
+        const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?key=${window.API_KEY}&alt=sse`;
+
+        const response = await fetch(streamUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: promptText }] }]
+            contents: [{ parts: [{ text: promptText }] }],
+            generationConfig: {
+              maxOutputTokens: 350,
+              temperature: 0.2
+            }
           })
         });
 
-        const aiData = await aiResponse.json();
-
-        if (aiData.error) {
-          resultDiv.innerHTML = `<strong>API Error:</strong> ${aiData.error.message}`;
+        if (!response.ok) {
+          resultDiv.innerHTML = `<strong>API Error ${response.status}</strong>`;
           return;
         }
 
-        let summaryHtml = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (summaryHtml) {
-          summaryHtml = summaryHtml.replace(/^```html\s*/i, '').replace(/```$/g, '');
-          resultDiv.innerHTML = summaryHtml;
-        } else {
-          resultDiv.innerHTML = "Unable to process summary for this query.";
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let accumulatedHtml = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const json = JSON.parse(line.replace("data: ", ""));
+                const textBit = json.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (textBit) {
+                  accumulatedHtml += textBit;
+                  // Strip markdown backticks on the fly
+                  let cleanHtml = accumulatedHtml.replace(/^```html\s*/i, '').replace(/```$/g, '');
+                  resultDiv.innerHTML = cleanHtml;
+                }
+              } catch (e) {
+                // Ignore incomplete SSE buffer lines
+              }
+            }
+          }
         }
 
       } catch (err) {
-        console.error("Error:", err);
-        resultDiv.innerHTML = "An error occurred while fetching data.";
+        console.error("Execution Error:", err);
+        resultDiv.innerHTML = "An error occurred during fetch.";
       } finally {
         searchBtn.disabled = false;
       }
