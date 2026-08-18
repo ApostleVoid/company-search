@@ -22,7 +22,7 @@
   <div class="container">
     <h2>Company Quick View</h2>
     <div class="search-box">
-      <input type="text" id="companyInput" placeholder="Enter company name (e.g. Apple, Tesla)...">
+      <input type="text" id="companyInput" placeholder="Enter company name...">
       <button id="searchBtn" onclick="analyzeCompany()">Search</button>
     </div>
 
@@ -49,10 +49,12 @@
       }
 
       searchBtn.disabled = true;
-      resultDiv.innerHTML = `<span class="status">Step 1/2: Fetching public news headlines...</span>`;
+      resultDiv.innerHTML = `<span class="status">Checking news feeds...</span>`;
 
       try {
-        // Step 1: Fetch raw headlines via RSS bridge (No search grounding API quota hit)
+        let promptText = "";
+
+        // Step 1: Attempt RSS search
         const query = encodeURIComponent(`${company} financial performance news`);
         const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`;
         const jsonBridgeUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
@@ -60,20 +62,12 @@
         const newsRes = await fetch(jsonBridgeUrl);
         const newsData = await newsRes.json();
 
-        if (!newsData.items || newsData.items.length === 0) {
-          resultDiv.innerHTML = "No recent public articles found for this company.";
-          searchBtn.disabled = false;
-          return;
-        }
-
-        const articlesContext = newsData.items.slice(0, 5).map(item => `- ${item.title} (${item.pubDate})`).join("\n");
-
-        resultDiv.innerHTML = `<span class="status">Step 2/2: Summarizing with Gemini 3.5 Flash...</span>`;
-
-        // Step 2: Send text context directly to Gemini 3.5 Flash endpoint
-        const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${window.API_KEY}`;
-
-        const promptText = `
+        if (newsData.items && newsData.items.length > 0) {
+          // Path A: Found recent RSS coverage
+          resultDiv.innerHTML = `<span class="status">Synthesizing recent news coverage with Gemini 3.5 Flash...</span>`;
+          const articlesContext = newsData.items.slice(0, 5).map(item => `- ${item.title} (${item.pubDate})`).join("\n");
+          
+          promptText = `
 You are a corporate analyst. Review these recent headlines for ${company}:
 
 ${articlesContext}
@@ -82,7 +76,26 @@ Provide a clean HTML summary (using <ul>, <li>, and <strong> tags) containing:
 1. A short company overview & current market sentiment.
 2. Key performance or news highlights from the last 3-6 months.
 Return ONLY raw HTML. Do not wrap in markdown blockquotes.
-        `;
+          `;
+        } else {
+          // Path B: Fallback for local/private portfolio companies with 0 RSS hits
+          resultDiv.innerHTML = `<span class="status">Generating analytical profile via Gemini 3.5 Flash...</span>`;
+          
+          promptText = `
+You are a corporate analyst. Generate a business overview and structural profile for the company: "${company}".
+
+Provide a clean HTML summary (using <ul>, <li>, and <strong> tags) containing:
+1. **Business Overview**: Core industry, primary services/products, and operational sector.
+2. **Key Financial & Operational Metrics**: Typical financial indicators, revenue drivers, and balance sheet considerations relevant to companies in this sector.
+3. **Market Risk Profile**: Key operational, market, or credit risks for this industry over recent quarters.
+
+Note: If specific current media reports are limited, evaluate the firm based on its industry profile and structural market position.
+Return ONLY raw HTML. Do not wrap in markdown blockquotes.
+          `;
+        }
+
+        // Step 2: Call Gemini 3.5 Flash Endpoint
+        const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${window.API_KEY}`;
 
         const aiResponse = await fetch(endpointUrl, {
           method: "POST",
@@ -101,7 +114,6 @@ Return ONLY raw HTML. Do not wrap in markdown blockquotes.
 
         let summaryHtml = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
         if (summaryHtml) {
-          // Clean accidental markdown wrappers
           summaryHtml = summaryHtml.replace(/^```html\s*/i, '').replace(/```$/g, '');
           resultDiv.innerHTML = summaryHtml;
         } else {
@@ -110,7 +122,7 @@ Return ONLY raw HTML. Do not wrap in markdown blockquotes.
 
       } catch (err) {
         console.error("Error:", err);
-        resultDiv.innerHTML = "An error occurred while communicating with the API.";
+        resultDiv.innerHTML = "An error occurred while fetching data.";
       } finally {
         searchBtn.disabled = false;
       }
