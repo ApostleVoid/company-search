@@ -14,6 +14,7 @@
     button { padding: 12px 24px; font-size: 16px; background-color: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
     button:disabled { background-color: #a0c3ff; cursor: not-allowed; }
     #result { line-height: 1.6; color: #3c4043; background: #f1f3f4; padding: 20px; border-radius: 8px; min-height: 100px; }
+    .status { color: #666; font-style: italic; }
   </style>
 </head>
 <body>
@@ -21,8 +22,8 @@
   <div class="container">
     <h2>Company Quick View</h2>
     <div class="search-box">
-      <input type="text" id="companyInput" placeholder="Enter company name (e.g. Pimkie)...">
-      <button id="searchBtn" onclick="getCompanyData()">Search</button>
+      <input type="text" id="companyInput" placeholder="Enter company name (e.g. Apple, Tesla)...">
+      <button id="searchBtn" onclick="analyzeCompany()">Search</button>
     </div>
 
     <div id="result">Enter a company name above to fetch live data...</div>
@@ -32,86 +33,84 @@
   <script src="config.js"></script>
 
   <script>
-    async function fetchWithRetry(url, requestBody, retries = 3, delay = 2000) {
-      for (let i = 0; i < retries; i++) {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody)
-        });
-
-        if (response.status === 429 && i < retries - 1) {
-          document.getElementById("result").innerHTML = `Free quota busy. Retrying in ${delay / 1000}s... (Attempt ${i + 1}/${retries})`;
-          await new Promise(res => setTimeout(res, delay));
-          delay *= 1.5; // Exponential backoff
-          continue;
-        }
-
-        return response;
-      }
-    }
-
-    async function getCompanyData() {
-      const companyName = document.getElementById("companyInput").value.trim();
+    async function analyzeCompany() {
+      const company = document.getElementById("companyInput").value.trim();
       const resultDiv = document.getElementById("result");
       const searchBtn = document.getElementById("searchBtn");
-      
-      if (!companyName) {
+
+      if (!company) {
         resultDiv.innerHTML = "Please enter a company name.";
         return;
       }
 
       if (!window.API_KEY) {
-        resultDiv.innerHTML = "API Key missing in config.js.";
+        resultDiv.innerHTML = "API Key missing or invalid in config.js.";
         return;
       }
 
-      // Disable button during call
       searchBtn.disabled = true;
-      resultDiv.innerHTML = "Searching live web data...";
-
-      // Optimized endpoint for higher free quota
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${window.API_KEY}`;
-
-      const requestBody = {
-        contents: [
-          {
-            parts: [
-              { text: `Provide a detailed quick view, corporate overview, recent performance over last 3-6 months, and key highlights for: ${companyName}` }
-            ]
-          }
-        ],
-        systemInstruction: {
-          parts: [
-            { text: "You are a corporate analyst. Format the summary in clean HTML using <ul>, <li>, and <strong> tags." }
-          ]
-        },
-        tools: [
-          { googleSearch: {} }
-        ]
-      };
+      resultDiv.innerHTML = `<span class="status">Step 1/2: Fetching public news headlines...</span>`;
 
       try {
-        const response = await fetchWithRetry(url, requestBody);
-        const data = await response.json();
+        // Step 1: Fetch raw headlines via RSS bridge (No search grounding API quota hit)
+        const query = encodeURIComponent(`${company} financial performance news`);
+        const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`;
+        const jsonBridgeUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
 
-        if (data.error) {
-          resultDiv.innerHTML = `<strong>Quota Error:</strong> ${data.error.message}`;
+        const newsRes = await fetch(jsonBridgeUrl);
+        const newsData = await newsRes.json();
+
+        if (!newsData.items || newsData.items.length === 0) {
+          resultDiv.innerHTML = "No recent public articles found for this company.";
+          searchBtn.disabled = false;
           return;
         }
 
-        const candidate = data.candidates?.[0];
-        const textOutput = candidate?.content?.parts?.[0]?.text;
+        const articlesContext = newsData.items.slice(0, 5).map(item => `- ${item.title} (${item.pubDate})`).join("\n");
 
-        if (textOutput) {
-          resultDiv.innerHTML = textOutput;
-        } else {
-          resultDiv.innerHTML = "No detailed information found for this query.";
+        resultDiv.innerHTML = `<span class="status">Step 2/2: Summarizing with Gemini 3.5 Flash...</span>`;
+
+        // Step 2: Send text context directly to Gemini 3.5 Flash endpoint
+        const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${window.API_KEY}`;
+
+        const promptText = `
+You are a corporate analyst. Review these recent headlines for ${company}:
+
+${articlesContext}
+
+Provide a clean HTML summary (using <ul>, <li>, and <strong> tags) containing:
+1. A short company overview & current market sentiment.
+2. Key performance or news highlights from the last 3-6 months.
+Return ONLY raw HTML. Do not wrap in markdown blockquotes.
+        `;
+
+        const aiResponse = await fetch(endpointUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: promptText }] }]
+          })
+        });
+
+        const aiData = await aiResponse.json();
+
+        if (aiData.error) {
+          resultDiv.innerHTML = `<strong>API Error:</strong> ${aiData.error.message}`;
+          return;
         }
 
-      } catch (error) {
-        console.error("Fetch Error:", error);
-        resultDiv.innerHTML = "Network or rate limit error. Wait a few seconds and try again.";
+        let summaryHtml = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (summaryHtml) {
+          // Clean accidental markdown wrappers
+          summaryHtml = summaryHtml.replace(/^```html\s*/i, '').replace(/```$/g, '');
+          resultDiv.innerHTML = summaryHtml;
+        } else {
+          resultDiv.innerHTML = "No summary could be generated.";
+        }
+
+      } catch (err) {
+        console.error("Error:", err);
+        resultDiv.innerHTML = "An error occurred while communicating with the API.";
       } finally {
         searchBtn.disabled = false;
       }
